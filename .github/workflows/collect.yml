@@ -1,0 +1,35 @@
+name: Busan Traffic Collector
+
+on:
+  schedule:
+    - cron: '0 * * * *'   # 매시간 정각 실행 (스크립트가 대상 시각인지 자체 판단)
+  workflow_dispatch:        # 수동 실행 버튼도 추가
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run collector
+        env:
+          SERVICE_KEY_1: ${{ secrets.SERVICE_KEY_1 }}
+          SERVICE_KEY_2: ${{ secrets.SERVICE_KEY_2 }}
+          SERVICE_KEY_3: ${{ secrets.SERVICE_KEY_3 }}
+          SERVICE_KEY_4: ${{ secrets.SERVICE_KEY_4 }}
+        run: python collect_all.py
+
+      - name: Commit and push collected data
+        run: |
+          git config user.name "traffic-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add collected_data/
+          git diff --staged --quiet || git commit -m "Add traffic data $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push
