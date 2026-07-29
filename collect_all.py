@@ -39,7 +39,7 @@ EXECUTION_SLOT_MAP = {
 
 # 수집 대상 날짜 (KST 기준, 7/29~8/4)
 TARGET_DATES = {"2026-07-29", "2026-07-30", "2026-07-31",
-                "2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04"}
+                 "2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04"}
 
 NUM_OF_ROWS = 100
 REQUEST_DELAY = 0.2
@@ -52,7 +52,8 @@ AVI_BASE_URL = "https://apis.data.go.kr/6260000/BusanITSAVI/AVIList"
 
 
 # ============================================================
-# 시간대 가드: 지금이 수집 대상 시각이 아니면 즉시 종료 (API 호출 자체를 안 함)
+# 시간대 가드: 실행 슬롯인지 확인하고, 목표 시각(target_hour) 기준으로
+# 라벨과 날짜를 확정해서 반환. 수집 대상 아니면 (None, None)
 # ============================================================
 def check_collection_slot():
     now = datetime.now(KST)
@@ -61,10 +62,10 @@ def check_collection_slot():
 
     if date_str not in TARGET_DATES:
         print(f"[스킵] {date_str}는 수집 대상 날짜가 아님")
-        return None
+        return None, None
     if hour not in EXECUTION_SLOT_MAP:
-        print(f"[스킵] {hour}시는 수집 대상 실행 시간이 아님")
-        return None
+        print(f"[스킵] {hour}시는 수집 대상 실행 시간이 아님 (실행 슬롯: {sorted(EXECUTION_SLOT_MAP.keys())})")
+        return None, None
 
     slot_info = EXECUTION_SLOT_MAP[hour]
     target_hour = slot_info["target_hour"]
@@ -74,8 +75,25 @@ def check_collection_slot():
     if not service_key:
         raise RuntimeError(f"KEY_{key_no}가 설정되지 않았습니다 (환경변수 확인 필요)")
 
-    print(f"[진행] {date_str} {now.strftime('%H:%M')} (수집 대상: {target_hour}시) — 담당 키: KEY_{key_no}")
-    return service_key
+    # target_hour가 실행 시각(hour)보다 작아지는 경우(자정을 넘기는 슬롯)는
+    # 현재 매핑엔 없지만, 향후 슬롯 추가 시를 대비해 날짜 이월을 처리해둠
+    target_date = now
+    if target_hour < hour:
+        target_date = now + timedelta(days=1)
+    target_date_str = target_date.strftime("%Y%m%d")
+
+    slot_label = f"{target_date_str}_{target_hour:02d}00"
+
+    print(f"[진행] {date_str} {now.strftime('%H:%M')} 실행 (수집 대상: {target_hour}시) "
+          f"— 담당 키: KEY_{key_no}, 라벨: {slot_label}")
+
+    # 같은 슬롯이 이미 수집돼 있으면 중복 방지 (지연/재실행 등으로 겹칠 경우 대비)
+    expected_file = os.path.join(OUTPUT_DIR, f"link_traffic_all_{slot_label}.csv")
+    if os.path.exists(expected_file):
+        print(f"[스킵] {slot_label} 슬롯은 이미 수집 완료됨 (중복 방지)")
+        return None, None
+
+    return service_key, slot_label
 
 
 # ============================================================
@@ -131,10 +149,10 @@ def collect_all_items(base_url, service_key, label):
 
 
 # ============================================================
-# 저장 함수: 필터링 없이 전체 그대로 CSV 저장
+# 저장 함수: 필터링 없이 전체 그대로 CSV 저장 (target_hour 기준 라벨 사용)
 # ============================================================
-def save_to_csv(items, filename_prefix, collection_time_label):
-    filename = os.path.join(OUTPUT_DIR, f"{filename_prefix}_{collection_time_label}.csv")
+def save_to_csv(items, filename_prefix, slot_label):
+    filename = os.path.join(OUTPUT_DIR, f"{filename_prefix}_{slot_label}.csv")
     if not items:
         print(f"[경고] {filename_prefix}: 저장할 데이터가 없습니다.")
         return
@@ -151,20 +169,19 @@ def save_to_csv(items, filename_prefix, collection_time_label):
 # 메인
 # ============================================================
 def main():
-    service_key = check_collection_slot()
+    service_key, slot_label = check_collection_slot()
     if service_key is None:
-        return  # 수집 대상 시각이 아니면 API 호출 없이 바로 종료
+        return  # 수집 대상 시각이 아니거나 이미 수집된 슬롯이면 API 호출 없이 바로 종료
 
-    now_label = datetime.now(KST).strftime("%Y%m%d_%H%M")
-    print(f"=== [{now_label}] 통합 수집 시작 ===")
+    print(f"=== [{slot_label}] 통합 수집 시작 ===")
 
     link_items = collect_all_items(LINK_BASE_URL, service_key, "LINK")
-    save_to_csv(link_items, "link_traffic_all", now_label)
+    save_to_csv(link_items, "link_traffic_all", slot_label)
 
     avi_items = collect_all_items(AVI_BASE_URL, service_key, "AVI")
-    save_to_csv(avi_items, "avi_traffic_all", now_label)
+    save_to_csv(avi_items, "avi_traffic_all", slot_label)
 
-    print(f"=== [{now_label}] 통합 수집 완료 ===\n")
+    print(f"=== [{slot_label}] 통합 수집 완료 ===\n")
 
 
 if __name__ == "__main__":
