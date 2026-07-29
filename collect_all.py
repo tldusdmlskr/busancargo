@@ -17,15 +17,29 @@ KEYS = {
     4: os.environ.get("SERVICE_KEY_4"),
 }
 
-# 시간대별 담당 키 매핑 (키 1개당 하루 2개 시간대 = 186회/일, 500회 한도 내)
-SLOT_KEY_MAP = {
-    7: 1, 8: 2, 9: 3, 12: 4,
-    17: 1, 18: 2, 19: 3, 21: 4,
+# ------------------------------------------------------------
+# [실행 시각(hour) -> 수집 대상 시간대 및 담당 키 매핑]
+# - 정각 요청 지연 방지를 위해 30분 전 실행 기준 (예: 5시 30분 실행 -> 6시 대상)
+# - 수집 대상 시간대: 6시, 7시, 8시, 9시, 12시, 14시, 17시, 18시, 19시, 20시, 21시 (총 11개)
+# - 4개 키 균등 분배 (키당 하루 최대 3회 x 약 93호출 = 279회/일, 일 500회 제한 내)
+# ------------------------------------------------------------
+EXECUTION_SLOT_MAP = {
+    5:  {"target_hour": 6,  "key_no": 1},  # 05:30 실행 -> 06시 데이터 수집 (KEY_1)
+    6:  {"target_hour": 7,  "key_no": 2},  # 06:30 실행 -> 07시 데이터 수집 (KEY_2)
+    7:  {"target_hour": 8,  "key_no": 3},  # 07:30 실행 -> 08시 데이터 수집 (KEY_3)
+    8:  {"target_hour": 9,  "key_no": 4},  # 08:30 실행 -> 09시 데이터 수집 (KEY_4)
+    11: {"target_hour": 12, "key_no": 1},  # 11:30 실행 -> 12시 데이터 수집 (KEY_1)
+    13: {"target_hour": 14, "key_no": 2},  # 13:30 실행 -> 14시 데이터 수집 (KEY_2)
+    16: {"target_hour": 17, "key_no": 3},  # 16:30 실행 -> 17시 데이터 수집 (KEY_3)
+    17: {"target_hour": 18, "key_no": 4},  # 17:30 실행 -> 18시 데이터 수집 (KEY_4)
+    18: {"target_hour": 19, "key_no": 1},  # 18:30 실행 -> 19시 데이터 수집 (KEY_1)
+    19: {"target_hour": 20, "key_no": 2},  # 19:30 실행 -> 20시 데이터 수집 (KEY_2)
+    20: {"target_hour": 21, "key_no": 3},  # 20:30 실행 -> 21시 데이터 수집 (KEY_3)
 }
 
 # 수집 대상 날짜 (KST 기준, 7/29~8/4)
 TARGET_DATES = {"2026-07-29", "2026-07-30", "2026-07-31",
-                 "2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04"}
+                "2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04"}
 
 NUM_OF_ROWS = 100
 REQUEST_DELAY = 0.2
@@ -48,16 +62,19 @@ def check_collection_slot():
     if date_str not in TARGET_DATES:
         print(f"[스킵] {date_str}는 수집 대상 날짜가 아님")
         return None
-    if hour not in SLOT_KEY_MAP:
-        print(f"[스킵] {hour}시는 수집 대상 시간이 아님")
+    if hour not in EXECUTION_SLOT_MAP:
+        print(f"[스킵] {hour}시는 수집 대상 실행 시간이 아님")
         return None
 
-    key_no = SLOT_KEY_MAP[hour]
+    slot_info = EXECUTION_SLOT_MAP[hour]
+    target_hour = slot_info["target_hour"]
+    key_no = slot_info["key_no"]
+
     service_key = KEYS.get(key_no)
     if not service_key:
         raise RuntimeError(f"KEY_{key_no}가 설정되지 않았습니다 (환경변수 확인 필요)")
 
-    print(f"[진행] {date_str} {hour}시 수집 시작 — 담당 키: KEY_{key_no}")
+    print(f"[진행] {date_str} {now.strftime('%H:%M')} (수집 대상: {target_hour}시) — 담당 키: KEY_{key_no}")
     return service_key
 
 

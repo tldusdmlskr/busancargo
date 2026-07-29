@@ -2,7 +2,7 @@ name: Busan Traffic Collector
 
 on:
   schedule:
-    - cron: '0 * * * *'   # 매시간 정각 실행 (스크립트가 대상 시각인지 자체 판단)
+    - cron: '30 20,21,22,23,2,4,7,8,9,10,11 * * *'
   workflow_dispatch:        # 수동 실행 버튼도 추가
 
 jobs:
