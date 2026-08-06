@@ -16,9 +16,6 @@ KEYS = {
     4: os.environ.get("SERVICE_KEY_4"),
 }
 
-# ------------------------------------------------------------
-# 원래 계획한 목표 시각 그대로 사용 (실행 시각 역산 방식 폐기)
-# ------------------------------------------------------------
 TARGET_HOURS = [7, 8, 9, 12, 17, 18, 19, 21]
 
 SLOT_KEY_MAP = {
@@ -26,12 +23,13 @@ SLOT_KEY_MAP = {
     17: 1, 18: 2, 19: 3, 21: 4,
 }
 
-TARGET_DATES = {"2026-07-29", "2026-07-30", "2026-07-31",
-                 "2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04"}
+# 목표 시각 30분 전부터 수집 시작
+START_BEFORE_MIN = 30
 
-# 목표 시각이 지난 뒤 이 시간(분) 안에만 캐치업 인정
-# 워크플로가 15분마다 깨어나므로, 최대 지연을 넉넉히 흡수하도록 90분으로 설정
-CATCHUP_WINDOW_MIN = 90
+# 같은 슬롯 최대 재시도(재수집) 횟수 — 트래픽 폭주 방지
+MAX_RETRIES_PER_SLOT = 2
+
+END_DATE = None  # 예: "2026-09-30", None이면 날짜 제한 없음
 
 NUM_OF_ROWS = 100
 REQUEST_DELAY = 0.2
@@ -44,46 +42,58 @@ AVI_BASE_URL = "https://apis.data.go.kr/6260000/BusanITSAVI/AVIList"
 
 
 # ============================================================
-# 슬롯 판단: "실행 시각"이 아니라 "목표 시각으로부터 경과 시간"으로 판단
+# 지금 시각이 어느 목표 시각(target_hour)의 담당 구간인지 판단
+# (목표시각 - 30분)부터, 다음 목표시각의 시작 전까지를 그 목표의 담당 구간으로 봄
+# ============================================================
+def get_current_target(now):
+    starts = sorted((h * 60 - START_BEFORE_MIN) % (24 * 60) for h in TARGET_HOURS)
+    now_min = now.hour * 60 + now.minute
+
+    candidates = [s for s in starts if s <= now_min]
+    if candidates:
+        start_min = max(candidates)
+    else:
+        # now_min이 모든 시작점보다 이르면(자정 직후 등) 전날의 마지막 시작점 사용
+        start_min = max(starts)
+
+    target_hour = ((start_min + START_BEFORE_MIN) // 60) % 24
+    return target_hour
+
+
+# ============================================================
+# 슬롯 판단 + 같은 슬롯 최대 재시도 횟수 체크
 # ============================================================
 def check_collection_slot():
     now = datetime.now(KST)
     date_str = now.strftime("%Y-%m-%d")
 
-    if date_str not in TARGET_DATES:
-        print(f"[스킵] {date_str}는 수집 대상 날짜가 아님")
-        return None, None
+    if END_DATE is not None and date_str > END_DATE:
+        print(f"[스킵] {date_str}는 종료일({END_DATE}) 이후라 수집 대상 아님")
+        return None, None, None
 
-    for target_hour in TARGET_HOURS:
-        target_time = now.replace(hour=target_hour, minute=0, second=0, microsecond=0)
-        elapsed_min = (now - target_time).total_seconds() / 60
+    target_hour = get_current_target(now)
+    slot_label = f"{date_str.replace('-', '')}_{target_hour:02d}00"
 
-        # 아직 목표 시각이 안 됐으면 이 target은 건너뛰고 다음 target 확인
-        if elapsed_min < 0:
-            continue
-        # 목표 시각이 지났지만 캐치업 윈도우를 넘었으면 이 target은 영구 소실 → 다음 target 확인
-        if elapsed_min > CATCHUP_WINDOW_MIN:
-            continue
+    # 같은 슬롯으로 이미 몇 번 저장됐는지 확인 (파일명 접두어로 카운트)
+    existing_count = sum(
+        1 for f in os.listdir(OUTPUT_DIR)
+        if f.startswith(f"link_traffic_all_{slot_label}")
+    )
+    if existing_count >= MAX_RETRIES_PER_SLOT:
+        print(f"[스킵] {slot_label} 슬롯은 이미 {existing_count}번 수집됨 (최대 {MAX_RETRIES_PER_SLOT}회 제한)")
+        return None, None, None
 
-        # 여기 도달하면 "목표 시각을 막 지났고, 아직 캐치업 윈도우 안"인 target
-        slot_label = f"{date_str.replace('-', '')}_{target_hour:02d}00"
-        expected_file = os.path.join(OUTPUT_DIR, f"link_traffic_all_{slot_label}.csv")
+    key_no = SLOT_KEY_MAP[target_hour]
+    service_key = KEYS.get(key_no)
+    if not service_key:
+        raise RuntimeError(f"KEY_{key_no}가 설정되지 않았습니다 (환경변수 확인 필요)")
 
-        if os.path.exists(expected_file):
-            # 이미 수집된 슬롯이면 다음 target 확인 (혹시 여러 target이 캐치업 윈도우에 겹칠 수 있으니 계속 순회)
-            continue
+    attempt_no = existing_count + 1
+    save_label = slot_label if existing_count == 0 else f"{slot_label}_try{attempt_no}"
 
-        key_no = SLOT_KEY_MAP[target_hour]
-        service_key = KEYS.get(key_no)
-        if not service_key:
-            raise RuntimeError(f"KEY_{key_no}가 설정되지 않았습니다 (환경변수 확인 필요)")
-
-        print(f"[진행] 현재 {now.strftime('%H:%M')} — 목표 {target_hour}시로부터 {elapsed_min:.0f}분 경과, "
-              f"아직 미수집 → 지금 수집 (담당 키: KEY_{key_no}, 라벨: {slot_label})")
-        return service_key, slot_label
-
-    print(f"[스킵] 현재 {now.strftime('%H:%M')} — 수집 대기 중이거나 이미 완료된 슬롯뿐임")
-    return None, None
+    print(f"[진행] 현재 {now.strftime('%H:%M')} — 담당 목표: {target_hour}시 "
+          f"(담당 키: KEY_{key_no}, 라벨: {save_label}, {attempt_no}/{MAX_RETRIES_PER_SLOT}번째 시도)")
+    return service_key, save_label, target_hour
 
 
 # ============================================================
@@ -139,10 +149,10 @@ def collect_all_items(base_url, service_key, label):
 
 
 # ============================================================
-# 저장 함수: 필터링 없이 전체 그대로 CSV 저장 (target_hour 기준 라벨)
+# 저장 함수
 # ============================================================
-def save_to_csv(items, filename_prefix, slot_label):
-    filename = os.path.join(OUTPUT_DIR, f"{filename_prefix}_{slot_label}.csv")
+def save_to_csv(items, filename_prefix, save_label):
+    filename = os.path.join(OUTPUT_DIR, f"{filename_prefix}_{save_label}.csv")
     if not items:
         print(f"[경고] {filename_prefix}: 저장할 데이터가 없습니다.")
         return
@@ -159,19 +169,19 @@ def save_to_csv(items, filename_prefix, slot_label):
 # 메인
 # ============================================================
 def main():
-    service_key, slot_label = check_collection_slot()
+    service_key, save_label, target_hour = check_collection_slot()
     if service_key is None:
         return
 
-    print(f"=== [{slot_label}] 통합 수집 시작 ===")
+    print(f"=== [{save_label}] 통합 수집 시작 ===")
 
     link_items = collect_all_items(LINK_BASE_URL, service_key, "LINK")
-    save_to_csv(link_items, "link_traffic_all", slot_label)
+    save_to_csv(link_items, "link_traffic_all", save_label)
 
     avi_items = collect_all_items(AVI_BASE_URL, service_key, "AVI")
-    save_to_csv(avi_items, "avi_traffic_all", slot_label)
+    save_to_csv(avi_items, "avi_traffic_all", save_label)
 
-    print(f"=== [{slot_label}] 통합 수집 완료 ===\n")
+    print(f"=== [{save_label}] 통합 수집 완료 ===\n")
 
 
 if __name__ == "__main__":
