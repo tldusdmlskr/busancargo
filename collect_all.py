@@ -16,6 +16,7 @@ KEYS = {
     4: os.environ.get("SERVICE_KEY_4"),
 }
 
+# 원래 목표 시각 그대로
 TARGET_HOURS = [7, 8, 9, 12, 17, 18, 19, 21]
 
 SLOT_KEY_MAP = {
@@ -23,10 +24,12 @@ SLOT_KEY_MAP = {
     17: 1, 18: 2, 19: 3, 21: 4,
 }
 
-# 목표 시각 30분 전부터 수집 시작
-START_BEFORE_MIN = 30
+# 각 목표 시각의 "-30분"부터 "+90분"까지만 수집 창으로 인정
+# (그 목표 시각 전후로만 반응, 다른 목표들 사이 빈 시간엔 아무 것도 안 함)
+WINDOW_BEFORE_MIN = 30
+WINDOW_AFTER_MIN = 90
 
-# 같은 슬롯 최대 재시도(재수집) 횟수 — 트래픽 폭주 방지
+# 같은 슬롯 최대 재시도(재수집) 횟수
 MAX_RETRIES_PER_SLOT = 2
 
 END_DATE = None  # 예: "2026-09-30", None이면 날짜 제한 없음
@@ -42,26 +45,8 @@ AVI_BASE_URL = "https://apis.data.go.kr/6260000/BusanITSAVI/AVIList"
 
 
 # ============================================================
-# 지금 시각이 어느 목표 시각(target_hour)의 담당 구간인지 판단
-# (목표시각 - 30분)부터, 다음 목표시각의 시작 전까지를 그 목표의 담당 구간으로 봄
-# ============================================================
-def get_current_target(now):
-    starts = sorted((h * 60 - START_BEFORE_MIN) % (24 * 60) for h in TARGET_HOURS)
-    now_min = now.hour * 60 + now.minute
-
-    candidates = [s for s in starts if s <= now_min]
-    if candidates:
-        start_min = max(candidates)
-    else:
-        # now_min이 모든 시작점보다 이르면(자정 직후 등) 전날의 마지막 시작점 사용
-        start_min = max(starts)
-
-    target_hour = ((start_min + START_BEFORE_MIN) // 60) % 24
-    return target_hour
-
-
-# ============================================================
-# 슬롯 판단 + 같은 슬롯 최대 재시도 횟수 체크
+# 슬롯 판단: 각 목표 시각마다 독립적인 [-30분, +90분] 창 안에 있는지만 확인
+# 여러 목표가 동시에 창 안에 들어오면(거의 없겠지만) 가장 가까운 목표 하나만 처리
 # ============================================================
 def check_collection_slot():
     now = datetime.now(KST)
@@ -69,19 +54,36 @@ def check_collection_slot():
 
     if END_DATE is not None and date_str > END_DATE:
         print(f"[스킵] {date_str}는 종료일({END_DATE}) 이후라 수집 대상 아님")
-        return None, None, None
+        return None, None
 
-    target_hour = get_current_target(now)
+    best_target = None
+    best_elapsed = None
+
+    for target_hour in TARGET_HOURS:
+        target_time = now.replace(hour=target_hour, minute=0, second=0, microsecond=0)
+        elapsed_min = (now - target_time).total_seconds() / 60
+
+        # 이 목표 시각의 수집 창 [-30분, +90분] 안에 들어오는지 확인
+        if -WINDOW_BEFORE_MIN <= elapsed_min <= WINDOW_AFTER_MIN:
+            if best_target is None or abs(elapsed_min) < abs(best_elapsed):
+                best_target = target_hour
+                best_elapsed = elapsed_min
+
+    if best_target is None:
+        print(f"[스킵] 현재 {now.strftime('%H:%M')} — 어떤 목표 시각의 수집 창에도 해당 없음 "
+              f"(목표: {TARGET_HOURS})")
+        return None, None
+
+    target_hour = best_target
     slot_label = f"{date_str.replace('-', '')}_{target_hour:02d}00"
 
-    # 같은 슬롯으로 이미 몇 번 저장됐는지 확인 (파일명 접두어로 카운트)
     existing_count = sum(
         1 for f in os.listdir(OUTPUT_DIR)
         if f.startswith(f"link_traffic_all_{slot_label}")
     )
     if existing_count >= MAX_RETRIES_PER_SLOT:
         print(f"[스킵] {slot_label} 슬롯은 이미 {existing_count}번 수집됨 (최대 {MAX_RETRIES_PER_SLOT}회 제한)")
-        return None, None, None
+        return None, None
 
     key_no = SLOT_KEY_MAP[target_hour]
     service_key = KEYS.get(key_no)
@@ -91,28 +93,35 @@ def check_collection_slot():
     attempt_no = existing_count + 1
     save_label = slot_label if existing_count == 0 else f"{slot_label}_try{attempt_no}"
 
-    print(f"[진행] 현재 {now.strftime('%H:%M')} — 담당 목표: {target_hour}시 "
+    print(f"[진행] 현재 {now.strftime('%H:%M')} — 목표 {target_hour}시로부터 {best_elapsed:.0f}분 "
           f"(담당 키: KEY_{key_no}, 라벨: {save_label}, {attempt_no}/{MAX_RETRIES_PER_SLOT}번째 시도)")
-    return service_key, save_label, target_hour
+    return service_key, save_label
 
 
 # ============================================================
-# 공통 함수: 페이지 하나 호출
+# 공통 함수: 페이지 하나 호출 (재시도 강화)
 # ============================================================
-def fetch_page(base_url, service_key, page_no):
+def fetch_page(base_url, service_key, page_no, max_retries=3, retry_delay=5):
     params = {
         "serviceKey": service_key,
         "pageNo": page_no,
         "numOfRows": NUM_OF_ROWS,
     }
-    resp = requests.get(base_url, params=params, headers={"accept": "application/json"}, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
-
-    if data.get("resultCode") != "00":
-        raise RuntimeError(f"API 오류: {data.get('resultMsg')}")
-
-    return data["content"]
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = requests.get(base_url, params=params, headers={"accept": "application/json"}, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("resultCode") != "00":
+                raise RuntimeError(f"API 오류: {data.get('resultMsg')}")
+            return data["content"]
+        except Exception as e:
+            last_error = e
+            print(f"[경고] {page_no}페이지 {attempt}/{max_retries}번째 시도 실패: {e}")
+            if attempt < max_retries:
+                time.sleep(retry_delay)
+    raise last_error
 
 
 # ============================================================
@@ -128,17 +137,8 @@ def collect_all_items(base_url, service_key, label):
     all_items = list(first["items"])
 
     for page in range(2, total_pages + 1):
-        try:
-            content = fetch_page(base_url, service_key, page)
-            all_items.extend(content["items"])
-        except Exception as e:
-            print(f"[{label}][경고] {page}페이지 호출 실패: {e} — 재시도 1회")
-            time.sleep(1)
-            try:
-                content = fetch_page(base_url, service_key, page)
-                all_items.extend(content["items"])
-            except Exception as e2:
-                print(f"[{label}][오류] {page}페이지 재시도도 실패, 건너뜀: {e2}")
+        content = fetch_page(base_url, service_key, page)
+        all_items.extend(content["items"])
         time.sleep(REQUEST_DELAY)
 
         if page % 20 == 0:
@@ -169,7 +169,7 @@ def save_to_csv(items, filename_prefix, save_label):
 # 메인
 # ============================================================
 def main():
-    service_key, save_label, target_hour = check_collection_slot()
+    service_key, save_label = check_collection_slot()
     if service_key is None:
         return
 
