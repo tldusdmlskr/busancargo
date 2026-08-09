@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.busancargo.collector</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/siyeon/busancargo/run_collector.sh</string>
+    </array>
+
+    <!-- 5분(300초)마다 실행. collect_all.py가 목표 시각 창(±) 밖이면 스스로 스킵함 -->
+    <key>StartInterval</key>
+    <integer>300</integer>
+
+    <!-- 로드되자마자 1회 즉시 실행 (테스트/즉시 확인용) -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Mac이 잠들어 있어 놓친 실행은 깨어난 직후 바로 실행 -->
+    <key>StartOnMount</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/siyeon/busancargo/logs/launchd_stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/siyeon/busancargo/logs/launchd_stderr.log</string>
+</dict>
+</plist>

@@ -2,3 +2,7 @@ tcs_downloads/
 vds_downloads/
 __pycache__/
 venv/
+.env
+*.log
+lkid_avi_downloads/
+logs/

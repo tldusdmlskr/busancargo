@@ -1,7 +1,6 @@
 name: Busan Traffic Collector
+# 로컬(launchd)로 전환. 자동 스케줄은 껐고, 필요할 때 수동 실행(workflow_dispatch)만 남김.
 on:
-  schedule:
-    - cron: '0 * * * *'   # 매시간 정각마다 실행
   workflow_dispatch:
 jobs:
   collect:
