@@ -1,0 +1,4 @@
+tcs_downloads/
+vds_downloads/
+__pycache__/
+venv/
