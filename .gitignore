@@ -6,3 +6,5 @@ venv/
 *.log
 lkid_avi_downloads/
 logs/
+myvenv/
+smart_intersection_downloads/
