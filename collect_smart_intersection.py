@@ -41,7 +41,7 @@ TARGET_INTERSECTIONS = [
 
 # 수집 기간 (⚠️ 데이터가 실제로 존재하는 과거 범위를 아직 다 확인 못했으면,
 #            처음엔 최근 1~2개월만 좁게 잡아서 테스트 후 넓히는 걸 추천)
-START_DATE = datetime.date(2025, 1, 1)
+START_DATE = datetime.date(2026, 7, 24)
 END_DATE = datetime.date.today() - datetime.timedelta(days=1)  # 오늘 데이터는 아직 없을 수 있어 어제까지
 
 HOURS = list(range(24))  # 0~23시 전체. 필요시 특정 시간대만으로 줄여도 됨 (예: [7,8,9,12,17,18,19,21])
