@@ -7,7 +7,7 @@ check_data_coverage.py(v1)는 VDS를 "1차정리 폴더(organize_vds_raw.py 결�
 전혀 알 수 없었다.
 
 v2는 VDS를 원본(vds_downloads, collect_vds_v2.py가 만드는 파일들) 기준으로
-"일(day) 단위" 커버리지를 직접 계산한다. 추가로 collect_vds_v2.py가 남기는
+"일(day) 단위" 커버리觀를 직접 계산한다. 추가로 collect_vds_v2.py가 남기는
 _collection_log.csv를 같이 읽어서, 아직 안 채워진 구간이
 
   (a) 이번까지 한 번도 OK로 받힌 적 없이 매번 "데이터 없음"으로만 응답이 왔는지
@@ -18,6 +18,13 @@ _collection_log.csv를 같이 읽어서, 아직 안 채워진 구간이
 를 구분해서 보여준다.
 
 TCS/물동량 체크는 v1과 동일 로직 재사용.
+
+2026-08-16 수정: 분석 기간을 2026-07-31까지로 확장(2026년 확보된 데이터까지 팀 논의로
+결정). 겸사겸사 TCS 월별 커버리지 집계 버그도 고침 - 예전에는 폴더 안 파일명에서
+정규식으로 뽑은 "20xx년" 문자열을 전부 카운트해버려서, 분석 기간(ALL_MONTHS) 밖의
+달(예: 이미 2026년 데이터까지 수집돼 있던 경우)까지 같이 세는 바람에 수집됨 개수가
+전체 개수(48/이제는 55)보다 커지는 이상한 결과(예: 진례 127/48)가 나왔었음. 이제는
+ALL_MONTHS 범위 안에 있는 달만 "수집됨"으로 센다.
 
 실행:
     python check_data_coverage_v2.py
@@ -33,9 +40,10 @@ from datetime import date, datetime, timedelta
 from collections import defaultdict
 import pandas as pd
 
-ALL_MONTHS = pd.period_range("2022-01", "2025-12", freq="M").strftime("%Y%m").tolist()
+ALL_MONTHS = pd.period_range("2022-01", "2026-07", freq="M").strftime("%Y%m").tolist()
+N_MONTHS = len(ALL_MONTHS)
 START_DATE = date(2022, 1, 1)
-END_DATE = date(2025, 12, 31)
+END_DATE = date(2026, 7, 31)
 
 # collect_vds_v2.py의 TARGET_ROUTES와 동일 (변경 시 같이 맞춰줄 것)
 TARGET_ROUTES = {
@@ -85,6 +93,9 @@ def resolve_path(root: Path, *parts: str):
 
 
 def month_files(base):
+    """폴더 안 csv 파일명에서 '20xx년xx월'을 뽑아 집합으로 반환.
+    ALL_MONTHS 범위로 필터링은 호출부에서 한다 (여기서 걸러버리면 '범위 밖에
+    이미 얼마나 더 수집돼 있는지'를 알 수 없어져서, 원시 집합은 그대로 반환)."""
     months = set()
     if base is None or not base.exists():
         return months
@@ -96,19 +107,23 @@ def month_files(base):
 
 
 def report_month_segment(label, base):
-    months = month_files(base)
-    missing = [m for m in ALL_MONTHS if m not in months]
+    months_raw = month_files(base)
+    months_in_range = months_raw & set(ALL_MONTHS)
+    months_out_of_range = months_raw - set(ALL_MONTHS)
+    missing = [m for m in ALL_MONTHS if m not in months_in_range]
     exists = base is not None and base.exists()
     print(f"- {label}")
     print(f"    폴더 존재: {exists} | 경로: {base}")
-    print(f"    2022-2025 중 파일이 있는 달: {len(months)}/48 | 결측 달: {len(missing)}/48")
+    print(f"    2022-01~2026-07 중 파일이 있는 달: {len(months_in_range)}/{N_MONTHS} | 결측 달: {len(missing)}/{N_MONTHS}")
+    if months_out_of_range:
+        print(f"    (참고: 분석 기간 밖 달의 파일도 {len(months_out_of_range)}개 있음 - 결측비율 계산에는 포함 안 함: {sorted(months_out_of_range)[:6]}{'...' if len(months_out_of_range) > 6 else ''})")
     if missing:
         show = missing if len(missing) <= 12 else missing[:12] + ["..."]
         print(f"    결측 예시: {show}")
     return {
         "구분": label, "폴더존재": exists, "수집단위": "월",
-        "수집됨": len(months), "전체": 48,
-        "결측비율(%)": round(len(missing) / 48 * 100, 1),
+        "수집됨": len(months_in_range), "전체": N_MONTHS,
+        "결측비율(%)": round(len(missing) / N_MONTHS * 100, 1),
     }
 
 
@@ -227,7 +242,7 @@ def report_vds_raw():
             n_covered = len(days)
             pct = round(n_covered / total_days * 100, 1)
             print(f"\n- VDS-{route}-{section}")
-            print(f"    2022-01-01~2025-12-31 중 확보일: {n_covered}/{total_days}일 ({pct}%)")
+            print(f"    {START_DATE.isoformat()}~{END_DATE.isoformat()} 중 확보일: {n_covered}/{total_days}일 ({pct}%)")
 
             miss = missing_ranges(days, START_DATE, END_DATE)
             genuine_gap_days = 0
@@ -280,8 +295,9 @@ def main():
         df = pd.read_csv(cargo_file, encoding="utf-8-sig")
         df["날짜"] = pd.to_datetime(df["날짜"])
         in_range = df[(df["날짜"] >= pd.Timestamp(START_DATE)) & (df["날짜"] <= pd.Timestamp(END_DATE))]
+        expected_days = (END_DATE - START_DATE).days + 1
         print(f"- 파일: {cargo_file.name} (존재)")
-        print(f"  전체 행수: {len(df)}, 2022~2025 범위 행수: {len(in_range)} (기대값 1461)")
+        print(f"  전체 행수: {len(df)}, {START_DATE}~{END_DATE} 범위 행수: {len(in_range)} (기대값 {expected_days})")
         for col in ["북컨물동량", "남컨물동량", "서컨물동량"]:
             if col in in_range.columns:
                 n_na = in_range[col].isna().sum()
